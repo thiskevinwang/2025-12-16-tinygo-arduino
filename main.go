@@ -19,12 +19,9 @@ var (
 	heartRate uint8 = 75 // 75bpm
 )
 
-func scaleADCToDivisor(adcValue uint16) uint16 {
-	if adcValue > 60000 {
-		return 20 // 1/20 second
-	} else {
-		return 2 // 1/2 second
-	}
+func log(mod, msg any) {
+	now := time.Now()
+	println(now.UnixMilli(), mod, msg)
 }
 
 // XIAO Seeed Studio
@@ -32,7 +29,7 @@ func scaleADCToDivisor(adcValue uint16) uint16 {
 //
 // TinyGo: https://tinygo.org/docs/reference/microcontrollers/xiao-ble/#interfaces
 func main() {
-	println("starting")
+	log("[main]", "starting")
 	must("enable BLE stack", adapter.Enable())
 	adv := adapter.DefaultAdvertisement()
 
@@ -70,7 +67,7 @@ func main() {
 	must("start adv", adv.Start())
 
 	/// configure analog-to-digital converter (ADC) for light sensor
-	machine.InitADC()                   // https://github.com/aykevl/board/blob/a919e54134677344aaee1dde53eb629377614259/board-pybadge.go#L37
+	machine.InitADC()
 	adc := machine.ADC{Pin: machine.A5} // <-- use A0..A5 on XIAO BLE
 	adc.Configure(machine.ADCConfig{})
 
@@ -83,100 +80,62 @@ func main() {
 	green.Configure(machine.PinConfig{Mode: machine.PinOutput})
 	blue.Configure(machine.PinConfig{Mode: machine.PinOutput})
 
-	onOffButton := machine.D7
+	// Ensure LEDs are off by default
+	red.Low()
+	green.Low()
+	blue.Low()
+
+	onOffButton := machine.D6
 	onOffButton.Configure(machine.PinConfig{Mode: machine.PinInputPullup})
 
-	checkInterval := 10 * time.Millisecond
+	// HiLetgo HC-SR501 - PIR Sensor pins
+	// Note: PIR VCC is connected to the XIAO 5V pin
+	pirOUT := machine.D7
+	pirOUT.Configure(machine.PinConfig{Mode: machine.PinInput})
 
-	// Helper function that sleeps but checks button frequently
-	// and sleeps dynamically based the input.
-	sleepWithButtonCheck := func(divisor uint16) bool {
-		// Avoid division by zero
-		if divisor == 0 {
-			divisor = 1
-		}
+	// PIR sensor warm-up period
+	log("[device]", "waiting")
+	time.Sleep(5 * time.Second)
+	log("[device]", "PIR sensor ready")
 
-		elapsed := time.Duration(0)
-		for elapsed < (time.Second / time.Duration(divisor)) {
-			if !onOffButton.Get() {
-				return true // Button pressed
-			}
-			time.Sleep(checkInterval)
-			elapsed += checkInterval
-		}
-		return false
-	}
-
-	// give some time to set up measurement environment
-	time.Sleep(2 * time.Second)
-	println("[debug]")
-	println("uuid:", bluetooth.ServiceUUIDHeartRate.String())
-	println("uuid:", bluetooth.ServiceUUIDHeartRate.String())
-
-	// Main loop: cycle through colors, but turn white if button pressed
+	// Main loop
 	for {
-		println("[device]", "cycling colors")
+		// 1. Read + log ADC (Light dependent resistor)
+		adcValue := adc.Get()
+		log("[adc]", adcValue)
 
+		// 2. Log Button - log-only
 		if !onOffButton.Get() {
-			// Button pressed, turn make led white
+			log("[button]", "pressed")
+		}
+
+		// 3. PIR takes precedence. If no motion, set LED based on ADC thresholds.
+		if pirOUT.Get() {
+			log("[pir]", "motion detected!")
+			// Light up all LEDs (White)
 			red.High()
 			green.High()
 			blue.High()
-			time.Sleep(200 * time.Millisecond)
-			red.Low()
-			green.Low()
-			blue.Low()
-			time.Sleep(100 * time.Millisecond)
-			continue // Skip the color cycle when button is pressed
+		} else {
+			if adcValue > 50000 {
+				// Blue
+				red.Low()
+				green.Low()
+				blue.High()
+			} else if adcValue > 40000 {
+				// Green
+				red.Low()
+				green.High()
+				blue.Low()
+			} else {
+				// Red
+				red.High()
+				green.Low()
+				blue.Low()
+			}
 		}
 
-		// Red
-		red.High()
-		green.Low()
-		blue.Low()
-		if sleepWithButtonCheck(scaleADCToDivisor(adc.Get())) {
-			continue
-		}
-
-		// Magenta (Red + Blue)
-		red.High()
-		green.Low()
-		blue.High()
-		if sleepWithButtonCheck(scaleADCToDivisor(adc.Get())) {
-			continue
-		}
-
-		// Blue
-		red.Low()
-		green.Low()
-		blue.High()
-		if sleepWithButtonCheck(scaleADCToDivisor(adc.Get())) {
-			continue
-		}
-
-		// Cyan (Green + Blue)
-		red.Low()
-		green.High()
-		blue.High()
-		if sleepWithButtonCheck(scaleADCToDivisor(adc.Get())) {
-			continue
-		}
-
-		// Green
-		red.Low()
-		green.High()
-		blue.Low()
-		if sleepWithButtonCheck(scaleADCToDivisor(adc.Get())) {
-			continue
-		}
-
-		// Yellow (Red + Green)
-		red.High()
-		green.High()
-		blue.Low()
-		if sleepWithButtonCheck(scaleADCToDivisor(adc.Get())) {
-			continue
-		}
+		time.Sleep(500 * time.Millisecond)
 	}
 }
 
@@ -199,5 +158,7 @@ func main() {
 func must(action string, err error) {
 	if err != nil {
 		panic("failed to " + action + ": " + err.Error())
+	} else {
+		log("[must]", action+" OK")
 	}
 }
